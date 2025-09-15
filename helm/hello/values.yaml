@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/carlosmsanchezm/hello-app
-  digest: sha256:0afa080be58b4240fa9bff3f23a8b4dcf94a811cfde91e7b57d43180ed1ab010
+  digest: sha256:e50def02d916eee491c1f38de61ed599d01e34024fcf7377a2e697f22f3fc241
   pullPolicy: IfNotPresent
 
 # If GHCR is private, set to ["ghcr-creds"] and create that secret once per namespace.

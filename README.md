@@ -1,7 +1,7 @@
 # hello-platform
 
 Decisive defaults for production:
-- **Immutable image** (digest pinned) ✅ `sha256:0afa080be58b4240fa9bff3f23a8b4dcf94a811cfde91e7b57d43180ed1ab010`
+- **Immutable image** (digest pinned) ✅ `sha256:075a028ea47969d41f577ea09fa7c76d5fcc61ea261a9a1b7b6512212e3be340`
 - **NetworkPolicy** on by default (ingress allow-list + DNS-only egress)
 - **No service account token**, non-root, read-only FS, dropped caps
 - **PDB** enabled, spread across nodes
@@ -14,7 +14,7 @@ Current pinned image in `helm/hello/values.yaml`:
 ```yaml
 image:
   repository: ghcr.io/carlosmsanchezm/hello-app
-  digest: sha256:0afa080be58b4240fa9bff3f23a8b4dcf94a811cfde91e7b57d43180ed1ab010
+  digest: sha256:075a028ea47969d41f577ea09fa7c76d5fcc61ea261a9a1b7b6512212e3be340
   pullPolicy: IfNotPresent
 imagePullSecrets: ["ghcr-creds"]  # Required for private GHCR
 ```
