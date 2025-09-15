@@ -1,0 +1,36 @@
+name: platform-ci
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "helm/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  lint-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Helm lint
+        run: helm lint helm/hello
+
+      - name: Template manifests (sanity)
+        run: helm template hello helm/hello > /dev/null
+
+      - name: Trivy config scan (Helm chart)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: 'config'
+          scanners: 'config'
+          scan-ref: helm/hello
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'

@@ -1,0 +1,268 @@
+===== ./README.md =====
+# hello-platform
+
+Decisive defaults for production:
+- **Immutable image** (digest pinned)
+- **NetworkPolicy** on by default (ingress allow-list + DNS-only egress)
+- **No service account token**, non-root, read-only FS, dropped caps
+- **PDB** enabled, spread across nodes
+
+## Configure
+- Set `image.repository` and `image.digest` in `helm/hello/values.yaml`.
+- If GHCR is private:
+  - Create pull secret once: `kubectl create secret docker-registry ghcr-creds --docker-server=ghcr.io --docker-username="$GH_USER" --docker-password="$GH_TOKEN"`
+  - Set `imagePullSecrets: ["ghcr-creds"]`.
+
+## Deploy
+```bash
+helm upgrade --install hello ./helm/hello
+kubectl port-forward svc/hello 8080:80
+curl -s http://localhost:8080/; echo
+curl -s http://localhost:8080/healthz; echo
+```
+
+===== ./.github/workflows/ci.yml =====
+name: platform-ci
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "helm/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  lint-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Helm lint
+        run: helm lint helm/hello
+
+      - name: Template manifests (sanity)
+        run: helm template hello helm/hello > /dev/null
+
+      - name: Trivy config scan (Helm chart)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: 'config'
+          scanners: 'config'
+          scan-ref: helm/hello
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+
+===== ./helm/hello/Chart.yaml =====
+apiVersion: v2
+name: hello
+description: Deploys the hello-app image with secure runtime defaults
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+===== ./helm/hello/templates/deployment.yaml =====
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+    spec:
+      serviceAccountName: {{ .Chart.Name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+        seccompProfile: { type: RuntimeDefault }
+
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- range .Values.imagePullSecrets }}
+        - name: {{ . }}
+      {{- end }}
+      {{- end }}
+
+      # Keep replicas spread across nodes for resilience
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+
+      containers:
+        - name: app
+          {{- if .Values.image.digest }}
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: {{ .Values.httpPortName }}
+              containerPort: {{ .Values.containerPort }}
+          env:
+            - name: PORT
+              value: "{{ .Values.containerPort }}"
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: {{ .Values.healthzPath }}, port: {{ .Values.httpPortName }} }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: {{ .Values.healthzPath }}, port: {{ .Values.httpPortName }} }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            readOnlyRootFilesystem: {{ .Values.securityContext.readOnlyRootFilesystem }}
+            allowPrivilegeEscalation: {{ .Values.securityContext.allowPrivilegeEscalation }}
+            capabilities:
+              drop: {{ toYaml .Values.securityContext.dropCaps | nindent 14 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+===== ./helm/hello/templates/service.yaml =====
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+  ports:
+    - name: {{ .Values.httpPortName }}
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.httpPortName }}
+
+===== ./helm/hello/templates/poddisruptionbudget.yaml =====
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Chart.Name }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+{{- end }}
+
+===== ./helm/hello/templates/serviceaccount.yaml =====
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Chart.Name }}
+automountServiceAccountToken: false
+
+===== ./helm/hello/templates/networkpolicy.yaml =====
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Chart.Name }}-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  policyTypes: ["Ingress","Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {{ toYaml .Values.networkPolicy.allowedSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.containerPort }}
+  egress:
+    # Allow DNS lookups
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}
+
+===== ./helm/hello/values.yaml =====
+image:
+  repository: ghcr.io/carlosmsanchezm/hello-app
+  # Use digest pinning for immutability (set this after you copy digest from GHCR UI)
+  digest: sha256:REPLACE_WITH_REAL_DIGEST
+  pullPolicy: IfNotPresent
+
+# If GHCR is private, set to ["ghcr-creds"] and create that secret once per namespace.
+imagePullSecrets: []
+
+replicaCount: 2
+
+containerPort: 8080
+healthzPath: /healthz
+httpPortName: http
+
+env:
+  MESSAGE: "Hello from your app!"
+
+resources:
+  requests: { cpu: 50m,  memory: 64Mi }
+  limits:   { cpu: 500m, memory: 256Mi }
+
+service:
+  port: 80
+  type: ClusterIP
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  dropCaps: ["ALL"]
+
+networkPolicy:
+  enabled: true
+  allowedSelector: { role: ingress }   # pods allowed to call this app
+
+# HA defaults
+pdb:
+  enabled: true
+  minAvailable: 1
+
